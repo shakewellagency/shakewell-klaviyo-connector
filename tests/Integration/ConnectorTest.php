@@ -57,11 +57,12 @@ final class ConnectorTest extends WP_UnitTestCase {
 				'phone_number'  => '4',
 				'location.city' => '6',
 			),
-			'properties'    => array( 'Venue' => '7' ),
-			'source'        => 'Wedding Venue Enquiry',
+			'properties'    => array( 'Plan' => '7' ),
+			'phone_country_code' => '44',
+			'source'        => 'Newsletter sign-up',
 			'event'         => array(
-				'name'       => 'Enquiry',
-				'properties' => array( 'Venue' => '7' ),
+				'name'       => 'Signed up',
+				'properties' => array( 'Plan' => '7' ),
 			),
 		);
 		$this->entry = array(
@@ -70,9 +71,9 @@ final class ConnectorTest extends WP_UnitTestCase {
 			'3'       => 'sam.private@example.com',
 			'1.3'     => 'Sam',
 			'1.6'     => 'Private',
-			'4'       => '0412 345 678',
-			'6'       => 'Sydney',
-			'7'       => 'Ivy',
+			'4'       => '07911 123456',
+			'6'       => 'Leeds',
+			'7'       => 'Pro',
 			'8'       => 'Yes',
 			'9'       => '',
 		);
@@ -81,8 +82,6 @@ final class ConnectorTest extends WP_UnitTestCase {
 	public function tear_down(): void {
 		putenv( 'SHAKEWELL_KLAVIYO_CONNECTOR_ENABLED' );
 		putenv( 'SHAKEWELL_KLAVIYO_CONNECTOR_API_KEY' );
-		putenv( 'KLAVIYO_CONNECTOR_ENABLED' );
-		putenv( 'KLAVIYO_PRIVATE_API_KEY' );
 		parent::tear_down();
 	}
 
@@ -137,9 +136,9 @@ final class ConnectorTest extends WP_UnitTestCase {
 		$this->assertSame( 'sam.private@example.com', $attrs['email'] );
 		$this->assertSame( 'Sam', $attrs['first_name'] );
 		$this->assertSame( 'Private', $attrs['last_name'] );
-		$this->assertSame( '+61412345678', $attrs['phone_number'] );
-		$this->assertSame( array( 'city' => 'Sydney' ), $attrs['location'] );
-		$this->assertSame( array( 'Venue' => 'Ivy' ), $attrs['properties'] );
+		$this->assertSame( '+447911123456', $attrs['phone_number'] );
+		$this->assertSame( array( 'city' => 'Leeds' ), $attrs['location'] );
+		$this->assertSame( array( 'Plan' => 'Pro' ), $attrs['properties'] );
 		$this->assertSame( 'Klaviyo-API-Key ' . self::KEY, $this->calls[0]['headers']['Authorization'] );
 		$this->assertSame( '2026-04-15', $this->calls[0]['headers']['revision'] );
 		$this->assertSame( 'application/vnd.api+json', $this->calls[0]['headers']['Content-Type'] );
@@ -159,11 +158,11 @@ final class ConnectorTest extends WP_UnitTestCase {
 		$this->assertSame( 'LIST1', $sub[0]['body']['data']['relationships']['list']['data']['id'] );
 		$this->assertSame( 'LIST2', $sub[1]['body']['data']['relationships']['list']['data']['id'] );
 		$this->assertSame( 'SUBSCRIBED', $sub[0]['body']['data']['attributes']['profiles']['data'][0]['attributes']['subscriptions']['email']['marketing']['consent'] );
-		$this->assertSame( 'Wedding Venue Enquiry', $sub[0]['body']['data']['attributes']['custom_source'] );
+		$this->assertSame( 'Newsletter sign-up', $sub[0]['body']['data']['attributes']['custom_source'] );
 		$this->assertSame( 0, $this->mentions( 'SMS1' ) );
 		$last = end( $this->calls );
 		$this->assertSame( 'https://a.klaviyo.com/api/events/', $last['url'] );
-		$this->assertSame( 'Enquiry', $last['body']['data']['attributes']['metric']['data']['attributes']['name'] );
+		$this->assertSame( 'Signed up', $last['body']['data']['attributes']['metric']['data']['attributes']['name'] );
 	}
 
 	public function test_subscribes_sms_when_its_consent_is_ticked(): void {
@@ -254,22 +253,29 @@ final class ConnectorTest extends WP_UnitTestCase {
 		$text = implode( "\n", $this->logs );
 		$this->assertStringContainsString( 'status=400', $text );
 		$this->assertStringContainsString( 'entry=501', $text );
-		$this->assertDoesNotMatchRegularExpression( '/sam|private|example\.com|0412|Sydney|pk_test_secret/i', $text );
+		$this->assertDoesNotMatchRegularExpression( '/sam|private|example\.com|07911|Leeds|pk_test_secret/i', $text );
 	}
 
 	public function test_phone_formats(): void {
 		$cases = array(
-			array( '0412 345 678', '+61412345678' ),
-			array( '+61 412 345 678', '+61412345678' ),
-			array( '412345678', '+61412345678' ),
-			array( '0061412345678', '+61412345678' ),
+			array( '07911 123456', '+447911123456' ),
+			array( '+44 7911 123456', '+447911123456' ),
+			array( '911123456', '+44911123456' ),
+			array( '00447911123456', '+447911123456' ),
 			array( '+1 (212) 555-0100', '+12125550100' ),
 			array( '123', '' ),
 		);
 		foreach ( $cases as list( $in, $out ) ) {
-			$this->assertSame( $out, Connector::phone( $in ), $in );
+			$this->assertSame( $out, Connector::phone( $in, '44' ), $in );
 		}
-		$this->assertSame( '+447911123456', Connector::phone( '07911 123456', '44' ) );
+		$this->assertSame( '+61412345678', Connector::phone( '0412 345 678', '61' ) );
+	}
+
+	public function test_local_numbers_need_a_country_code_but_international_ones_do_not(): void {
+		$this->assertSame( '', Connector::phone( '07911 123456' ) );
+		$this->assertSame( '', Connector::phone( '911123456' ) );
+		$this->assertSame( '+447911123456', Connector::phone( '+44 7911 123456' ) );
+		$this->assertSame( '+447911123456', Connector::phone( '0044 7911 123456' ) );
 	}
 
 	public function test_off_by_default_without_a_key_and_on_with_both(): void {
@@ -283,10 +289,12 @@ final class ConnectorTest extends WP_UnitTestCase {
 		$this->assertSame( 'k', Plugin::context()['key'] );
 	}
 
-	public function test_original_merivale_names_still_work(): void {
+	public function test_unprefixed_names_are_ignored(): void {
 		putenv( 'KLAVIYO_CONNECTOR_ENABLED=1' );
-		putenv( 'KLAVIYO_PRIVATE_API_KEY=legacy' );
-		$this->assertSame( 'legacy', Plugin::context()['key'] );
+		putenv( 'KLAVIYO_PRIVATE_API_KEY=other' );
+		$this->assertNull( Plugin::context() );
+		putenv( 'KLAVIYO_CONNECTOR_ENABLED' );
+		putenv( 'KLAVIYO_PRIVATE_API_KEY' );
 	}
 
 	public function test_hook_does_nothing_while_off(): void {

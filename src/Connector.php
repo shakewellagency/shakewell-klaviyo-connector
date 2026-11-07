@@ -82,18 +82,20 @@ final class Connector {
 
 	/**
 	 * E.164 phone. A leading + or 00 is international; a leading 0 or a bare 9-digit number gets the
-	 * feed's country code (default 61, Australia). Empty string if unusable.
+	 * feed's country code. With no country code those local numbers are unusable. Empty string if unusable.
 	 *
 	 * @param string $raw          Phone as typed.
 	 * @param string $country_code Digits only, no plus.
 	 */
-	public static function phone( string $raw, string $country_code = '61' ): string {
+	public static function phone( string $raw, string $country_code = '' ): string {
 		$digits = (string) preg_replace( '/\D/', '', $raw );
 		if ( str_starts_with( trim( $raw ), '+' ) ) {
 			return strlen( $digits ) >= 8 && strlen( $digits ) <= 15 ? '+' . $digits : '';
 		}
 		if ( str_starts_with( $digits, '00' ) ) {
 			$digits = substr( $digits, 2 );
+		} elseif ( '' === $country_code ) {
+			return '';
 		} elseif ( str_starts_with( $digits, '0' ) ) {
 			$digits = $country_code . substr( $digits, 1 );
 		} elseif ( 9 === strlen( $digits ) ) {
@@ -124,7 +126,7 @@ final class Connector {
 		foreach ( $feed['profile'] ?? array() as $name => $field_id ) {
 			$value = self::value( $entry, (string) $field_id );
 			if ( 'phone_number' === $name ) {
-				$value = self::phone( $value, (string) ( $feed['phone_country_code'] ?? '61' ) );
+				$value = self::phone( $value, (string) ( $feed['phone_country_code'] ?? '' ) );
 			}
 			if ( '' === $value ) {
 				continue;
