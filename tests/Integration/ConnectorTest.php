@@ -260,7 +260,7 @@ final class ConnectorTest extends WP_UnitTestCase {
 		$cases = array(
 			array( '07911 123456', '+447911123456' ),
 			array( '+44 7911 123456', '+447911123456' ),
-			array( '911123456', '+44911123456' ),
+			array( '911123456', '+911123456' ),
 			array( '00447911123456', '+447911123456' ),
 			array( '+1 (212) 555-0100', '+12125550100' ),
 			array( '123', '' ),
@@ -271,9 +271,17 @@ final class ConnectorTest extends WP_UnitTestCase {
 		$this->assertSame( '+61412345678', Connector::phone( '0412 345 678', '61' ) );
 	}
 
+	public function test_unusable_phone_is_logged_without_the_number(): void {
+		unset( $this->feed['phone_country_code'] );
+		$this->run_with( array( $this->feed ), $this->entry );
+		$text = implode( "\n", $this->logs );
+		$this->assertStringContainsString( 'phone not usable', $text );
+		$this->assertStringNotContainsString( '07911', $text );
+	}
+
 	public function test_local_numbers_need_a_country_code_but_international_ones_do_not(): void {
 		$this->assertSame( '', Connector::phone( '07911 123456' ) );
-		$this->assertSame( '', Connector::phone( '911123456' ) );
+		$this->assertSame( '+12125550100', Connector::phone( '12125550100' ) );
 		$this->assertSame( '+447911123456', Connector::phone( '+44 7911 123456' ) );
 		$this->assertSame( '+447911123456', Connector::phone( '0044 7911 123456' ) );
 	}

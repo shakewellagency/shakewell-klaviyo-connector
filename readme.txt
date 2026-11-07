@@ -98,9 +98,15 @@ Not at the same time. While the add-on is active this plugin sends nothing. Deac
 
 Please do not open a public issue. Follow SECURITY.md in the plugin's repository.
 
+== Upgrade Notice ==
+
+= 0.1.1 =
+Breaking: rename KLAVIYO_PRIVATE_API_KEY and KLAVIYO_CONNECTOR_ENABLED to SHAKEWELL_KLAVIYO_CONNECTOR_API_KEY and _ENABLED, or the connector stays off. Set phone_country_code in each feed, or local phone numbers are skipped.
+
 == Changelog ==
 
 = 0.1.1 =
+* Breaking: the setting names KLAVIYO_PRIVATE_API_KEY and KLAVIYO_CONNECTOR_ENABLED are replaced by SHAKEWELL_KLAVIYO_CONNECTOR_API_KEY and SHAKEWELL_KLAVIYO_CONNECTOR_ENABLED. The built-in default country code is gone: set phone_country_code per feed. Numbers without a leading + or 00 or 0 are now read as already including their country code, and a skipped phone is logged.
 * Site-neutral release: no built-in country code for local phone numbers (set `phone_country_code` per feed), the admin notice is dismissible, and only the `SHAKEWELL_KLAVIYO_CONNECTOR_` setting names are read.
 
 = 0.1.0 =
