@@ -1,10 +1,10 @@
 === Shakewell Connector for Klaviyo and Gravity Forms ===
-Contributors: shakewell
+Contributors: shakewellagency
 Tags: klaviyo, gravity forms, email marketing, newsletter, consent
 Requires at least: 6.5
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 0.1.0
+Stable tag: 0.1.1
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -45,13 +45,13 @@ The plugin makes no other outside requests, has no tracking and does not call ho
 `define( 'SHAKEWELL_KLAVIYO_CONNECTOR_API_KEY', 'pk_...' );`
 `define( 'SHAKEWELL_KLAVIYO_CONNECTOR_ENABLED', true );`
 
-The same names work as environment variables. The older names `KLAVIYO_PRIVATE_API_KEY` and `KLAVIYO_CONNECTOR_ENABLED` are also accepted, as constants or environment variables. The enabled switch is on for `1` or `true` and off for anything else.
+The same names work as environment variables. The enabled switch is on for `1` or `true` and off for anything else.
 
 4. Add a feed per form with the `shakewell_klaviyo_connector_feeds` filter, in a theme, a must-use plugin or your own plugin:
 
 `add_filter( 'shakewell_klaviyo_connector_feeds', function ( $feeds ) {`
 `    $feeds[] = array(`
-`        'form_id'       => 30,                  // Gravity Forms form id`
+`        'form_id'       => 1,                   // Gravity Forms form id`
 `        'lists'         => array( 'AbC123' ),   // Klaviyo list ids for email marketing`
 `        'email_consent' => '8.1',               // consent checkbox input id; omit to always subscribe`
 `        'profile'       => array(               // Klaviyo attribute => Gravity Forms field id`
@@ -61,11 +61,11 @@ The same names work as environment variables. The older names `KLAVIYO_PRIVATE_A
 `            'phone_number'  => '4',`
 `            'location.city' => '6',`
 `        ),`
-`        'properties'    => array( 'Venue' => '7' ),  // custom profile properties (optional)`
-`        'source'        => 'Venue enquiry',          // custom_source label (optional)`
+`        'properties'    => array( 'Plan' => '7' ),   // custom profile properties (optional)`
+`        'source'        => 'Newsletter sign-up',    // custom_source label (optional)`
 `        'sms'           => array( 'list' => 'XyZ789', 'consent' => '9.1' ),  // optional SMS list`
-`        'event'         => array( 'name' => 'Enquiry', 'properties' => array( 'Venue' => '7' ) ),  // optional`
-`        'phone_country_code' => '61',           // optional, default 61 (Australia)`
+`        'event'         => array( 'name' => 'Signed up', 'properties' => array( 'Plan' => '7' ) ),  // optional`
+`        'phone_country_code' => '44',           // optional; needed to read local numbers such as 07911 123456 (no default)`
 `    );`
 `    return $feeds;`
 `} );`
@@ -98,7 +98,16 @@ Not at the same time. While the add-on is active this plugin sends nothing. Deac
 
 Please do not open a public issue. Follow SECURITY.md in the plugin's repository.
 
+== Upgrade Notice ==
+
+= 0.1.1 =
+Breaking: rename KLAVIYO_PRIVATE_API_KEY and KLAVIYO_CONNECTOR_ENABLED to SHAKEWELL_KLAVIYO_CONNECTOR_API_KEY and _ENABLED, or the connector stays off. Set phone_country_code in each feed, or local phone numbers are skipped.
+
 == Changelog ==
+
+= 0.1.1 =
+* Breaking: the setting names KLAVIYO_PRIVATE_API_KEY and KLAVIYO_CONNECTOR_ENABLED are replaced by SHAKEWELL_KLAVIYO_CONNECTOR_API_KEY and SHAKEWELL_KLAVIYO_CONNECTOR_ENABLED. The built-in default country code is gone: set phone_country_code per feed. Numbers without a leading + or 00 or 0 are now read as already including their country code, and a skipped phone is logged.
+* Site-neutral release: no built-in country code for local phone numbers (set `phone_country_code` per feed), the admin notice is dismissible, and only the `SHAKEWELL_KLAVIYO_CONNECTOR_` setting names are read.
 
 = 0.1.0 =
 * First release. Per-form feeds, consent handling, retries, de-duplication per entry, key from the server configuration, logs without personal data.

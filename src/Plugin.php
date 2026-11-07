@@ -26,25 +26,16 @@ final class Plugin {
 
 	/**
 	 * Reads a setting from a PHP constant or an environment variable, never the database.
-	 * The Shakewell name wins; the original Merivale name is still accepted.
 	 *
 	 * @param string $name API_KEY or ENABLED.
 	 */
 	public static function setting( string $name ): string {
-		$legacy = array(
-			'API_KEY' => 'KLAVIYO_PRIVATE_API_KEY',
-			'ENABLED' => 'KLAVIYO_CONNECTOR_ENABLED',
-		);
-		foreach ( array( 'SHAKEWELL_KLAVIYO_CONNECTOR_' . $name, $legacy[ $name ] ) as $candidate ) {
-			if ( defined( $candidate ) ) {
-				return trim( (string) constant( $candidate ) );
-			}
-			$value = getenv( $candidate );
-			if ( false !== $value ) {
-				return trim( $value );
-			}
+		$candidate = 'SHAKEWELL_KLAVIYO_CONNECTOR_' . $name;
+		if ( defined( $candidate ) ) {
+			return trim( (string) constant( $candidate ) );
 		}
-		return '';
+		$value = getenv( $candidate );
+		return false === $value ? '' : trim( $value );
 	}
 
 	/**
@@ -93,7 +84,7 @@ final class Plugin {
 			return;
 		}
 		printf(
-			'<div class="notice notice-warning"><p>%s</p></div>',
+			'<div class="notice notice-warning is-dismissible"><p>%s</p></div>',
 			esc_html__( 'Shakewell Connector for Klaviyo and Gravity Forms needs the Gravity Forms plugin to be installed and active. Until then it does nothing.', 'shakewell-klaviyo-connector' )
 		);
 	}

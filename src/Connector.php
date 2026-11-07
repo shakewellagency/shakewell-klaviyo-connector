@@ -81,13 +81,14 @@ final class Connector {
 	}
 
 	/**
-	 * E.164 phone. A leading + or 00 is international; a leading 0 or a bare 9-digit number gets the
-	 * feed's country code (default 61, Australia). Empty string if unusable.
+	 * E.164 phone. A leading + or 00 is international. A leading 0 is a national trunk prefix: it is
+	 * replaced by the feed's country code, and without one the number is unusable. Any other digits are
+	 * taken to include their country code already. Empty string if unusable.
 	 *
 	 * @param string $raw          Phone as typed.
 	 * @param string $country_code Digits only, no plus.
 	 */
-	public static function phone( string $raw, string $country_code = '61' ): string {
+	public static function phone( string $raw, string $country_code = '' ): string {
 		$digits = (string) preg_replace( '/\D/', '', $raw );
 		if ( str_starts_with( trim( $raw ), '+' ) ) {
 			return strlen( $digits ) >= 8 && strlen( $digits ) <= 15 ? '+' . $digits : '';
@@ -95,9 +96,10 @@ final class Connector {
 		if ( str_starts_with( $digits, '00' ) ) {
 			$digits = substr( $digits, 2 );
 		} elseif ( str_starts_with( $digits, '0' ) ) {
+			if ( '' === $country_code ) {
+				return '';
+			}
 			$digits = $country_code . substr( $digits, 1 );
-		} elseif ( 9 === strlen( $digits ) ) {
-			$digits = $country_code . $digits;
 		}
 		return strlen( $digits ) >= 8 && strlen( $digits ) <= 15 ? '+' . $digits : '';
 	}
@@ -124,7 +126,7 @@ final class Connector {
 		foreach ( $feed['profile'] ?? array() as $name => $field_id ) {
 			$value = self::value( $entry, (string) $field_id );
 			if ( 'phone_number' === $name ) {
-				$value = self::phone( $value, (string) ( $feed['phone_country_code'] ?? '61' ) );
+				$value = self::phone( $value, (string) ( $feed['phone_country_code'] ?? '' ) );
 			}
 			if ( '' === $value ) {
 				continue;
@@ -203,6 +205,11 @@ final class Connector {
 	public static function run_feed( array $ctx, array $feed, array $entry, string $tag ): bool {
 		$log   = $ctx['log'];
 		$attrs = self::profile_attributes( $feed, $entry );
+		$phone = (string) ( $feed['profile']['phone_number'] ?? '' );
+		if ( '' !== $phone && '' !== self::value( $entry, $phone ) && empty( $attrs['phone_number'] ) ) {
+			// Constant text only: never the number itself.
+			$log( "$tag phone not usable; local numbers need phone_country_code in the feed" );
+		}
 		if ( ! filter_var( $attrs['email'] ?? '', FILTER_VALIDATE_EMAIL ) ) {
 			$log( "$tag skipped: no valid email" );
 			return true; // Nothing to send is not a failure to retry.
