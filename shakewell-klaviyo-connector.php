@@ -3,7 +3,7 @@
  * Plugin Name:       Shakewell Connector for Klaviyo and Gravity Forms
  * Plugin URI:        https://github.com/shakewellagency/shakewell-klaviyo-connector
  * Description:       Adds people who submit selected Gravity Forms forms to a Klaviyo list, with their consent. Off by default.
- * Version:           0.1.1
+ * Version:           0.1.2
  * Requires at least: 6.5
  * Requires PHP:      8.1
  * Author:            Shakewell
