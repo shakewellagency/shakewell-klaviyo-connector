@@ -28,7 +28,7 @@ final class Connector {
 	}
 
 	/**
-	 * One API call, up to 3 attempts on transport errors, 429 and 5xx.
+	 * One API call, one attempt: the visitor is waiting. A failed entry is retried later from cron.
 	 * Returns error codes and field pointers only: the detail text can contain the submitted address.
 	 *
 	 * @param array  $ctx     Context from Plugin::context().
@@ -37,39 +37,24 @@ final class Connector {
 	 * @return array{ok:bool,code:int,errors:string[]}
 	 */
 	public static function request( array $ctx, string $path, array $payload ): array {
-		$args = array(
-			'method'  => 'POST',
-			'timeout' => 10,
-			'headers' => array(
-				'Authorization' => 'Klaviyo-API-Key ' . $ctx['key'],
-				'Content-Type'  => 'application/vnd.api+json',
-				'Accept'        => 'application/vnd.api+json',
-				'revision'      => self::REVISION,
-			),
-			'body'    => wp_json_encode( $payload ),
+		$response = wp_remote_request(
+			'https://a.klaviyo.com/api/' . $path,
+			array(
+				'method'  => 'POST',
+				'timeout' => 5,
+				'headers' => array(
+					'Authorization' => 'Klaviyo-API-Key ' . $ctx['key'],
+					'Content-Type'  => 'application/vnd.api+json',
+					'Accept'        => 'application/vnd.api+json',
+					'revision'      => self::REVISION,
+				),
+				'body'    => wp_json_encode( $payload ),
+			)
 		);
-		$code = 0;
-		$body = '';
-		for ( $try = 1; $try <= 3; $try++ ) {
-			$response = wp_remote_request( 'https://a.klaviyo.com/api/' . $path, $args );
-			$code     = 0;
-			$body     = '';
-			$wait     = null;
-			if ( ! is_wp_error( $response ) ) {
-				$code        = (int) wp_remote_retrieve_response_code( $response );
-				$body        = (string) wp_remote_retrieve_body( $response );
-				$retry_after = wp_remote_retrieve_header( $response, 'retry-after' );
-				$wait        = is_numeric( $retry_after ) ? (int) $retry_after : null;
-			}
-			if ( 0 !== $code && 429 !== $code && $code < 500 ) {
-				break;
-			}
-			if ( $try < 3 ) {
-				( $ctx['sleep'] )( min( 5, $wait ?? 2 ** ( $try - 1 ) ) );
-			}
-		}
-		$errors  = array();
-		$decoded = json_decode( $body, true );
+		$code     = is_wp_error( $response ) ? 0 : (int) wp_remote_retrieve_response_code( $response );
+		$body     = is_wp_error( $response ) ? '' : (string) wp_remote_retrieve_body( $response );
+		$errors   = array();
+		$decoded  = json_decode( $body, true );
 		foreach ( is_array( $decoded ) ? (array) ( $decoded['errors'] ?? array() ) : array() as $error ) {
 			$errors[] = ( $error['code'] ?? '?' ) . '@' . ( $error['source']['pointer'] ?? '' );
 		}
@@ -81,9 +66,9 @@ final class Connector {
 	}
 
 	/**
-	 * E.164 phone. A leading + or 00 is international. A leading 0 is a national trunk prefix: it is
-	 * replaced by the feed's country code, and without one the number is unusable. Any other digits are
-	 * taken to include their country code already. Empty string if unusable.
+	 * E.164 phone. A leading + or 00 is international. Otherwise the number is national and needs the
+	 * feed's country code (without one it is unusable): a leading 0 is replaced by it, and digits that
+	 * do not already start with it get it prefixed. Empty string if unusable.
 	 *
 	 * @param string $raw          Phone as typed.
 	 * @param string $country_code Digits only, no plus.
@@ -95,11 +80,13 @@ final class Connector {
 		}
 		if ( str_starts_with( $digits, '00' ) ) {
 			$digits = substr( $digits, 2 );
+		} elseif ( '' === $country_code ) {
+			return '';
 		} elseif ( str_starts_with( $digits, '0' ) ) {
-			if ( '' === $country_code ) {
-				return '';
-			}
 			$digits = $country_code . substr( $digits, 1 );
+		} elseif ( ! str_starts_with( $digits, $country_code ) ) {
+			// ponytail: a national number that happens to begin with the country code is read as international.
+			$digits = $country_code . $digits;
 		}
 		return strlen( $digits ) >= 8 && strlen( $digits ) <= 15 ? '+' . $digits : '';
 	}
@@ -201,8 +188,9 @@ final class Connector {
 	 * @param array  $feed  Feed.
 	 * @param array  $entry Gravity Forms entry.
 	 * @param string $tag   Log prefix (form and entry ids).
+	 * @param array  $done  Step labels already delivered for this entry; steps that succeed are added, so a replay repeats only what failed.
 	 */
-	public static function run_feed( array $ctx, array $feed, array $entry, string $tag ): bool {
+	public static function run_feed( array $ctx, array $feed, array $entry, string $tag, array &$done = array() ): bool {
 		$log   = $ctx['log'];
 		$attrs = self::profile_attributes( $feed, $entry );
 		$phone = (string) ( $feed['profile']['phone_number'] ?? '' );
@@ -217,9 +205,16 @@ final class Connector {
 
 		// A mapped consent field must be ticked; without consent nothing at all is sent.
 		$consent_fields = array( $feed['email_consent'] ?? null, $feed['sms']['consent'] ?? null );
-		$consented      = fn( $field ) => null === $field || '' !== self::value( $entry, (string) $field );
-		$source         = $feed['source'] ?? null;
-		$steps          = array();
+		foreach ( array_filter( $consent_fields, fn( $f ) => null !== $f ) as $field ) {
+			// A checkbox group is stored as 3.1, 3.2 ...; plain 3 is always empty and would silently drop consent.
+			if ( ! str_contains( (string) $field, '.' ) && array_filter( array_keys( $entry ), fn( $k ) => str_starts_with( (string) $k, "$field." ) ) ) {
+				$log( "$tag skipped: consent field $field is a checkbox group, map an input id such as $field.1" );
+				return true; // A setup error does not fix itself on retry.
+			}
+		}
+		$consented = fn( $field ) => null === $field || '' !== self::value( $entry, (string) $field );
+		$source    = $feed['source'] ?? null;
+		$steps     = array();
 		if ( $consented( $feed['email_consent'] ?? null ) ) {
 			foreach ( $feed['lists'] ?? array() as $list ) {
 				$steps[ "list=$list" ] = self::subscribe_payload( (string) $list, $attrs, false, $source );
@@ -255,15 +250,17 @@ final class Connector {
 		}
 
 		$ok = true;
-		foreach ( $steps as $label => $payload ) {
+		foreach ( array_diff_key( $steps, array_flip( $done ) ) as $label => $payload ) {
 			$result = self::request( $ctx, 'profile-subscription-bulk-create-jobs/', $payload );
 			if ( ! $result['ok'] ) {
 				$ok = false;
 				$log( "$tag step=subscribe $label status={$result['code']} errors=" . implode( ',', $result['errors'] ) );
+			} else {
+				$done[] = $label;
 			}
 		}
 
-		if ( ! empty( $feed['event']['name'] ) ) {
+		if ( ! empty( $feed['event']['name'] ) && ! in_array( 'event', $done, true ) ) {
 			$props  = self::profile_attributes( array( 'properties' => $feed['event']['properties'] ?? array() ), $entry )['properties'] ?? array();
 			$result = self::request(
 				$ctx,
@@ -292,22 +289,27 @@ final class Connector {
 			if ( ! $result['ok'] ) {
 				$ok = false;
 				$log( "$tag step=event status={$result['code']} errors=" . implode( ',', $result['errors'] ) );
+			} else {
+				$done[] = 'event';
 			}
 		}
 		return $ok;
 	}
 
 	/**
-	 * All feeds for the entry's form. Entry meta makes it safe to call twice for the same entry.
+	 * All feeds for the entry's form. Entry meta makes it safe to call twice for the same entry: a sent
+	 * feed is skipped, and a failed one repeats only the steps that did not succeed.
+	 * True when every feed succeeded.
 	 *
 	 * @param array $entry Gravity Forms entry.
 	 * @param array $form  Gravity Forms form.
 	 * @param array $ctx   Context.
 	 */
-	public static function process_entry( array $entry, array $form, array $ctx ): void {
+	public static function process_entry( array $entry, array $form, array $ctx ): bool {
 		if ( 'spam' === ( $entry['status'] ?? 'active' ) || empty( $entry['id'] ) ) {
-			return;
+			return true;
 		}
+		$all_ok = true;
 		foreach ( self::feeds() as $i => $feed ) {
 			if ( (int) ( $feed['form_id'] ?? 0 ) !== (int) $form['id'] ) {
 				continue;
@@ -316,8 +318,12 @@ final class Connector {
 			if ( 'sent' === gform_get_meta( $entry['id'], $meta ) ) {
 				continue;
 			}
-			$ok = self::run_feed( $ctx, $feed, $entry, "form={$form['id']} entry={$entry['id']}" );
+			$done = array_filter( explode( ',', (string) gform_get_meta( $entry['id'], $meta . '_done' ) ) );
+			$ok   = self::run_feed( $ctx, $feed, $entry, "form={$form['id']} entry={$entry['id']}", $done );
+			gform_update_meta( $entry['id'], $meta . '_done', implode( ',', $done ) );
 			gform_update_meta( $entry['id'], $meta, $ok ? 'sent' : 'failed' );
+			$all_ok = $all_ok && $ok;
 		}
+		return $all_ok;
 	}
 }
