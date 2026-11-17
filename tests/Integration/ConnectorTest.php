@@ -21,7 +21,6 @@ final class ConnectorTest extends WP_UnitTestCase {
 	private array $responses = array();
 	private array $calls     = array();
 	private array $logs      = array();
-	private array $sleeps    = array();
 	private array $feed;
 	private array $entry;
 	private array $form = array( 'id' => 30 );
@@ -35,6 +34,7 @@ final class ConnectorTest extends WP_UnitTestCase {
 				$this->calls[] = array(
 					'url'     => $url,
 					'headers' => $args['headers'],
+					'timeout' => $args['timeout'],
 					'body'    => json_decode( $args['body'], true ),
 				);
 				return array_shift( $this->responses ) ?? $this->reply( 200 );
@@ -101,9 +101,6 @@ final class ConnectorTest extends WP_UnitTestCase {
 	private function ctx(): array {
 		return array(
 			'key'   => self::KEY,
-			'sleep' => function ( $seconds ) {
-				$this->sleeps[] = $seconds;
-			},
 			'log'   => function ( $message ) {
 				$this->logs[] = $message;
 			},
@@ -113,7 +110,6 @@ final class ConnectorTest extends WP_UnitTestCase {
 	private function run_with( array $feeds, array $entry, array $responses = array() ): void {
 		$this->calls     = array();
 		$this->logs      = array();
-		$this->sleeps    = array();
 		$this->responses = $responses;
 		$GLOBALS['shakewell_gf_meta'] = array();
 		add_filter( 'shakewell_klaviyo_connector_feeds', fn() => $feeds );
@@ -213,19 +209,21 @@ final class ConnectorTest extends WP_UnitTestCase {
 		$this->assertSame( 0, $this->mentions( 'SMS1' ), 'no SMS subscription without a usable number' );
 	}
 
-	public function test_429_honours_retry_after_and_5xx_backs_off(): void {
-		$this->run_with( array( $this->feed ), $this->entry, array( $this->reply( 429, '', array( 'retry-after' => '3' ) ), $this->reply( 503 ) ) );
-		$this->assertSame( array( 3, 2 ), $this->sleeps );
-		$this->assertStringEndsWith( '/profile-import/', $this->calls[2]['url'] );
-		$this->assertGreaterThan( 3, count( $this->calls ) );
-	}
-
-	public function test_gives_up_after_three_attempts_and_marks_failed(): void {
+	public function test_a_failed_call_is_not_retried_while_the_visitor_waits(): void {
 		$err = new WP_Error( 'http_request_failed', 'down' );
 		$this->run_with( array( $this->feed ), $this->entry, array( $err, $err, $err ) );
-		$this->assertCount( 3, $this->calls );
-		$this->assertSame( array( 1, 2 ), $this->sleeps );
+		$this->assertCount( 1, $this->calls );
+		$this->assertSame( 5, $this->calls[0]['timeout'] );
 		$this->assertSame( 'failed', $GLOBALS['shakewell_gf_meta'][501]['shakewell_klaviyo_connector_feed_0'] );
+	}
+
+	public function test_a_failed_submission_schedules_a_cron_retry(): void {
+		putenv( 'SHAKEWELL_KLAVIYO_CONNECTOR_ENABLED=1' );
+		putenv( 'SHAKEWELL_KLAVIYO_CONNECTOR_API_KEY=' . self::KEY );
+		add_filter( 'shakewell_klaviyo_connector_feeds', fn() => array( $this->feed ) );
+		$this->responses = array( $this->reply( 503 ) );
+		Plugin::on_submission( $this->entry, $this->form );
+		$this->assertNotFalse( wp_next_scheduled( 'shakewell_klaviyo_connector_retry', array( 501, 30, 1 ) ) );
 	}
 
 	public function test_client_error_is_not_retried(): void {
@@ -236,15 +234,35 @@ final class ConnectorTest extends WP_UnitTestCase {
 	public function test_same_entry_never_sends_twice_and_a_failed_one_is_replayed(): void {
 		$feeds = array( $this->feed );
 		$this->run_with( $feeds, $this->entry );
-		$sent = count( $this->calls );
 		add_filter( 'shakewell_klaviyo_connector_feeds', fn() => $feeds );
 		$this->calls = array();
 		Connector::process_entry( $this->entry, $this->form, $this->ctx() );
 		$this->assertSame( array(), $this->calls );
 		$GLOBALS['shakewell_gf_meta'][501]['shakewell_klaviyo_connector_feed_0'] = 'failed';
 		Connector::process_entry( $this->entry, $this->form, $this->ctx() );
-		$this->assertCount( $sent, $this->calls );
+		$this->assertCount( 1, $this->calls, 'only the idempotent profile upsert repeats; every other step is already done' );
 		remove_all_filters( 'shakewell_klaviyo_connector_feeds' );
+	}
+
+	public function test_replay_repeats_only_the_failed_step(): void {
+		$ok = $this->reply( 200 );
+		// profile, LIST1, LIST2 fails, event.
+		$this->run_with( array( $this->feed ), $this->entry, array( $ok, $ok, $this->reply( 503 ), $ok ) );
+		$this->assertSame( 1, $this->mentions( 'Signed up' ) );
+		$this->calls = array();
+		add_filter( 'shakewell_klaviyo_connector_feeds', fn() => array( $this->feed ) );
+		Connector::process_entry( $this->entry, $this->form, $this->ctx() );
+		remove_all_filters( 'shakewell_klaviyo_connector_feeds' );
+		$this->assertSame( 0, $this->mentions( 'Signed up' ), 'event is not sent twice' );
+		$this->assertSame( 0, $this->mentions( 'LIST1' ), 'delivered list is not sent twice' );
+		$this->assertSame( 1, $this->mentions( 'LIST2' ) );
+		$this->assertSame( 'sent', $GLOBALS['shakewell_gf_meta'][501]['shakewell_klaviyo_connector_feed_0'] );
+	}
+
+	public function test_consent_mapped_to_a_checkbox_group_sends_nothing_and_says_why(): void {
+		$this->run_with( array( $this->feed ), array( '8.1' => 'Yes' ) + $this->entry );
+		$this->assertSame( array(), $this->calls );
+		$this->assertStringContainsString( 'map an input id such as 8.1', implode( "\n", $this->logs ) );
 	}
 
 	public function test_failure_log_has_no_personal_data_and_no_key(): void {
@@ -260,7 +278,9 @@ final class ConnectorTest extends WP_UnitTestCase {
 		$cases = array(
 			array( '07911 123456', '+447911123456' ),
 			array( '+44 7911 123456', '+447911123456' ),
-			array( '911123456', '+911123456' ),
+			array( '911123456', '+44911123456' ),
+			array( '7911 123456', '+447911123456' ),
+			array( '447911123456', '+447911123456' ),
 			array( '00447911123456', '+447911123456' ),
 			array( '+1 (212) 555-0100', '+12125550100' ),
 			array( '123', '' ),
@@ -281,7 +301,9 @@ final class ConnectorTest extends WP_UnitTestCase {
 
 	public function test_local_numbers_need_a_country_code_but_international_ones_do_not(): void {
 		$this->assertSame( '', Connector::phone( '07911 123456' ) );
-		$this->assertSame( '+12125550100', Connector::phone( '12125550100' ) );
+		$this->assertSame( '', Connector::phone( '412345678' ), 'no guessing a country code' );
+		$this->assertSame( '+61412345678', Connector::phone( '412345678', '61' ) );
+		$this->assertSame( '+61298765432', Connector::phone( '298765432', '61' ) );
 		$this->assertSame( '+447911123456', Connector::phone( '+44 7911 123456' ) );
 		$this->assertSame( '+447911123456', Connector::phone( '0044 7911 123456' ) );
 	}
