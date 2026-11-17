@@ -19,7 +19,7 @@ namespace Shakewell\KlaviyoConnector;
 
 defined( 'ABSPATH' ) || exit;
 
-const VERSION = '0.1.1';
+const VERSION = '0.1.2';
 const FILE    = __FILE__;
 
 require_once __DIR__ . '/src/Plugin.php';
