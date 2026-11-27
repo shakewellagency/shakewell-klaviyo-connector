@@ -7,4 +7,5 @@
 
 defined( 'WP_UNINSTALL_PLUGIN' ) || exit;
 
-// Nothing to delete: the plugin stores no options. Sent/failed flags live in Gravity Forms entry meta and go with the entries.
+// No options are stored. Sent/failed flags live in Gravity Forms entry meta and go with the entries; only pending retries are ours to remove.
+wp_unschedule_hook( 'shakewell_klaviyo_connector_retry' );
