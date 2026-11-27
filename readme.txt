@@ -4,7 +4,7 @@ Tags: klaviyo, gravity forms, email marketing, newsletter, consent
 Requires at least: 6.5
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 0.1.2
+Stable tag: 0.1.3
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -15,10 +15,10 @@ Adds people who submit selected Gravity Forms forms to a Klaviyo list, with thei
 When a visitor submits a form you have chosen, the plugin creates or updates their profile in Klaviyo and subscribes them to the lists you name. It does the job of the paid Gravity Forms Klaviyo add-on, with no feed screen: you describe each form in code, so the mapping lives in version control.
 
 * Off until you turn it on. Nothing is sent without an API key and the enabled switch.
-* Consent first. If you map a consent checkbox and it is not ticked, nothing is sent for that person.
+* Consent first, per channel. Without the email consent box the email address is not sent, and without the SMS consent box the phone number is not sent: not on the profile, not in a subscription, not in the event. If neither box allows anything to be sent, nothing is.
 * Sends only the fields you map.
 * The Klaviyo private API key is read from a PHP constant or an environment variable. It is never stored in the database and never shown in any screen.
-* The visitor never waits on Klaviyo: each call is tried once, with a 5 second limit. A failed entry is retried from WP-Cron after 1 minute, 15 minutes and 1 hour, repeating only the steps that failed. Each entry is marked sent or failed, so the same step is never sent twice.
+* The visitor waits on Klaviyo for 5 seconds at most in total: each call is tried once, the first slow, rate-limited or failing response stops the rest, and whatever was not sent is left to WP-Cron. A failed entry is retried from WP-Cron after 1 minute, 15 minutes and 1 hour, repeating only the steps that failed. Each entry is marked sent or failed, so the same step is never sent twice.
 * Logs carry the form id, entry id, step and HTTP status only. Never an email address, a name, a phone number, the API key or Klaviyo's response text.
 * Stays silent while the paid Klaviyo add-on for Gravity Forms is active, so nobody is sent twice.
 
@@ -45,7 +45,7 @@ The plugin makes no other outside requests, has no tracking and does not call ho
 `define( 'SHAKEWELL_KLAVIYO_CONNECTOR_API_KEY', 'pk_...' );`
 `define( 'SHAKEWELL_KLAVIYO_CONNECTOR_ENABLED', true );`
 
-The same names work as environment variables. The enabled switch is on for `1` or `true` and off for anything else.
+The same names work as environment variables. The enabled switch is on for exactly `1` or `true` and off for anything else, including `TRUE`, `yes` and `on`.
 
 4. Add a feed per form with the `shakewell_klaviyo_connector_feeds` filter, in a theme, a must-use plugin or your own plugin:
 
@@ -74,7 +74,7 @@ Field ids are the ones in the Gravity Forms entry: a plain number such as `3`, o
 
 == Consent ==
 
-If a feed maps `email_consent`, the person must have ticked that checkbox (any non-empty value) or nothing is sent for them: no profile, no subscription, no event. The same holds for the SMS list and its own `consent` field. A feed with no consent field subscribes everyone who submits the form, so use one wherever the law of your audience asks for opt-in. Collecting and recording the consent, and the wording next to the checkbox, are your responsibility.
+Consent is checked per channel. If a feed maps `email_consent`, the person must have ticked that checkbox (any non-empty value) or their email address is not sent anywhere: no profile, no email subscription, no event. The same holds for the phone number and the SMS list with the `sms` `consent` field. When only one box is ticked, the profile and the event carry just that channel's identifier (so an SMS-only sign-up has a phone number and no email address). If neither allows anything to be sent, nothing is sent. A feed with no consent field subscribes everyone who submits the form, so use one wherever the law of your audience asks for opt-in. Collecting and recording the consent, and the wording next to the checkbox, are your responsibility.
 
 == Frequently Asked Questions ==
 
@@ -100,6 +100,9 @@ Please do not open a public issue. Follow SECURITY.md in the plugin's repository
 
 == Upgrade Notice ==
 
+= 0.1.3 =
+Consent is now applied per channel: an unticked email box keeps the email address out of Klaviyo, and an unticked SMS box keeps the phone number out. Deactivating the plugin removes pending retries.
+
 = 0.1.2 =
 National phone numbers now need phone_country_code in the feed, with or without the leading 0. Failed submissions are retried from WP-Cron instead of while the visitor waits.
 
@@ -107,6 +110,14 @@ National phone numbers now need phone_country_code in the feed, with or without 
 Breaking: rename KLAVIYO_PRIVATE_API_KEY and KLAVIYO_CONNECTOR_ENABLED to SHAKEWELL_KLAVIYO_CONNECTOR_API_KEY and _ENABLED, or the connector stays off. Set phone_country_code in each feed, or local phone numbers are skipped.
 
 == Changelog ==
+
+= 0.1.3 =
+* Consent is applied per channel. With the email box unticked and SMS ticked, the email address no longer goes to Klaviyo (profile or event). With email ticked and SMS unticked, the phone number no longer goes on the profile.
+* A visitor waits at most 5 seconds in total. The first transport error, 429 or 5xx stops the remaining steps, and anything left is retried from WP-Cron.
+* The sign-up event carries a unique_id and the entry's time, so a retry after a lost response is not counted twice.
+* phone_country_code accepts +61 as well as 61. A phone number rejected by Klaviyo is logged (never the number).
+* Deactivating or uninstalling the plugin removes pending retries.
+* CI fails on a Plugin Check error and .gitattributes normalises line endings.
 
 = 0.1.2 =
 * Phone numbers without a leading 0 or + (such as 412345678) get the feed's country code instead of being read as international. Without phone_country_code they are skipped.
