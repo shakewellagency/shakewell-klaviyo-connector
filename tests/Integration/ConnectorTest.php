@@ -126,7 +126,7 @@ final class ConnectorTest extends WP_UnitTestCase {
 	}
 
 	public function test_maps_profile_and_sends_the_right_request(): void {
-		$this->run_with( array( $this->feed ), $this->entry );
+		$this->run_with( array( $this->feed ), array( '9' => 'Yes' ) + $this->entry );
 		$attrs = $this->calls[0]['body']['data']['attributes'];
 		$this->assertSame( 'https://a.klaviyo.com/api/profile-import/', $this->calls[0]['url'] );
 		$this->assertSame( 'sam.private@example.com', $attrs['email'] );
@@ -181,6 +181,39 @@ final class ConnectorTest extends WP_UnitTestCase {
 		) + $this->entry );
 		$this->assertSame( 0, $this->mentions( 'LIST1' ) );
 		$this->assertSame( 1, $this->mentions( 'SMS1' ) );
+	}
+
+	public function test_sms_only_consent_sends_no_email_and_no_event_for_email(): void {
+		$this->run_with( array( $this->feed ), array(
+			'8' => '',
+			'9' => 'Yes',
+		) + $this->entry );
+		$this->assertSame( 0, $this->mentions( 'sam.private@example.com' ), 'the email address goes nowhere without email consent' );
+		$this->assertSame( '+447911123456', $this->calls[0]['body']['data']['attributes']['phone_number'] );
+		$event = end( $this->calls )['body']['data']['attributes'];
+		$this->assertArrayNotHasKey( 'email', $event['profile']['data']['attributes'] );
+	}
+
+	public function test_email_only_consent_sends_no_phone_anywhere(): void {
+		$this->run_with( array( $this->feed ), $this->entry );
+		$this->assertSame( 0, $this->mentions( '+447911123456' ) );
+		$this->assertSame( 0, $this->mentions( 'SMS1' ) );
+		$this->assertSame( 'sam.private@example.com', $this->calls[0]['body']['data']['attributes']['email'] );
+	}
+
+	public function test_sms_only_consent_without_a_usable_phone_sends_nothing(): void {
+		$this->run_with( array( $this->feed ), array(
+			'8' => '',
+			'9' => 'Yes',
+			'4' => '',
+		) + $this->entry );
+		$this->assertSame( array(), $this->calls );
+	}
+
+	public function test_an_unticked_sms_consent_field_never_sends_the_phone_even_without_an_sms_list(): void {
+		unset( $this->feed['sms']['list'] );
+		$this->run_with( array( $this->feed ), $this->entry );
+		$this->assertSame( 0, $this->mentions( '+447911123456' ) );
 	}
 
 	public function test_feed_without_consent_field_subscribes_always(): void {
@@ -246,8 +279,8 @@ final class ConnectorTest extends WP_UnitTestCase {
 
 	public function test_replay_repeats_only_the_failed_step(): void {
 		$ok = $this->reply( 200 );
-		// profile, LIST1, LIST2 fails, event.
-		$this->run_with( array( $this->feed ), $this->entry, array( $ok, $ok, $this->reply( 503 ), $ok ) );
+		// profile, LIST1, LIST2 rejected (a client error does not stop the run), event.
+		$this->run_with( array( $this->feed ), $this->entry, array( $ok, $ok, $this->reply( 400 ), $ok ) );
 		$this->assertSame( 1, $this->mentions( 'Signed up' ) );
 		$this->calls = array();
 		add_filter( 'shakewell_klaviyo_connector_feeds', fn() => array( $this->feed ) );
@@ -385,5 +418,77 @@ final class ConnectorTest extends WP_UnitTestCase {
 		ob_start();
 		Plugin::missing_notice();
 		$this->assertSame( '', ob_get_clean() );
+	}
+
+	public function test_a_server_error_stops_the_remaining_steps_for_cron(): void {
+		$this->run_with( array( $this->feed ), $this->entry, array( $this->reply( 200 ), $this->reply( 503 ) ) );
+		$this->assertCount( 2, $this->calls, 'profile, then the first list; nothing after the 5xx' );
+		$this->assertSame( 'failed', $GLOBALS['shakewell_gf_meta'][501]['shakewell_klaviyo_connector_feed_0'] );
+	}
+
+	public function test_rate_limit_and_transport_error_also_stop_the_run(): void {
+		$this->run_with( array( $this->feed ), $this->entry, array( $this->reply( 200 ), $this->reply( 429 ) ) );
+		$this->assertCount( 2, $this->calls );
+		$this->run_with( array( $this->feed ), $this->entry, array( $this->reply( 200 ), new WP_Error( 'http_request_failed', 'slow' ) ) );
+		$this->assertCount( 2, $this->calls );
+	}
+
+	public function test_a_client_error_on_one_list_does_not_stop_the_others(): void {
+		$this->run_with( array( $this->feed ), $this->entry, array( $this->reply( 200 ), $this->reply( 400 ) ) );
+		$this->assertCount( 4, $this->calls, 'profile, two lists, event' );
+	}
+
+	public function test_visitor_time_budget_leaves_the_rest_to_cron(): void {
+		$ctx             = $this->ctx();
+		$ctx['deadline'] = microtime( true ) - 1;
+		$this->calls     = array();
+		$this->responses = array();
+		add_filter( 'shakewell_klaviyo_connector_feeds', fn() => array( $this->feed ) );
+		$ok = Connector::process_entry( $this->entry, $this->form, $ctx );
+		remove_all_filters( 'shakewell_klaviyo_connector_feeds' );
+		$this->assertFalse( $ok );
+		$this->assertCount( 1, $this->calls, 'the profile only' );
+		$this->assertSame( 1, $this->calls[0]['timeout'], 'timeout shrinks to the time left' );
+		// Cron has no deadline, so the retry sends the rest.
+		$this->calls = array();
+		add_filter( 'shakewell_klaviyo_connector_feeds', fn() => array( $this->feed ) );
+		$this->assertTrue( Connector::process_entry( $this->entry, $this->form, $this->ctx() ) );
+		remove_all_filters( 'shakewell_klaviyo_connector_feeds' );
+		$this->assertSame( 1, $this->mentions( 'Signed up' ) );
+		$this->assertSame( 1, $this->mentions( 'LIST1' ) );
+	}
+
+	public function test_hook_gives_the_visitor_a_five_second_budget(): void {
+		putenv( 'SHAKEWELL_KLAVIYO_CONNECTOR_ENABLED=1' );
+		putenv( 'SHAKEWELL_KLAVIYO_CONNECTOR_API_KEY=' . self::KEY );
+		add_filter( 'shakewell_klaviyo_connector_feeds', fn() => array( $this->feed ) );
+		Plugin::on_submission( $this->entry, $this->form );
+		$this->assertLessThanOrEqual( 5, $this->calls[0]['timeout'] );
+		$this->assertGreaterThanOrEqual( 1, $this->calls[0]['timeout'] );
+	}
+
+	public function test_event_carries_a_unique_id_and_the_entry_time(): void {
+		$this->run_with( array( $this->feed ), array(
+			'form_id'      => 30,
+			'date_created' => '2026-11-20 03:04:05',
+		) + $this->entry );
+		$event = end( $this->calls )['body']['data']['attributes'];
+		$this->assertSame( 'gf-30-501-0', $event['unique_id'] );
+		$this->assertSame( '2026-11-20T03:04:05+00:00', $event['time'] );
+	}
+
+	public function test_country_code_with_a_plus_works_and_a_rejected_phone_is_logged(): void {
+		$this->assertSame( '+61412345678', Connector::phone( '0412 345 678', '+61' ) );
+		$bad = $this->reply( 400, '{"errors":[{"code":"invalid","detail":"x","source":{"pointer":"/data/attributes/phone_number"}}]}' );
+		$this->run_with( array( $this->feed ), array( '9' => 'Yes' ) + $this->entry, array( $bad ) );
+		$this->assertStringContainsString( 'phone rejected by Klaviyo', implode( "\n", $this->logs ) );
+		$this->assertStringNotContainsString( '07911', implode( "\n", $this->logs ) );
+	}
+
+	public function test_deactivation_removes_pending_retries(): void {
+		wp_schedule_single_event( time() + 60, 'shakewell_klaviyo_connector_retry', array( 501, 30, 1 ) );
+		$this->assertNotFalse( wp_next_scheduled( 'shakewell_klaviyo_connector_retry', array( 501, 30, 1 ) ) );
+		Plugin::deactivate();
+		$this->assertFalse( wp_next_scheduled( 'shakewell_klaviyo_connector_retry', array( 501, 30, 1 ) ) );
 	}
 }
