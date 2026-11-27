@@ -41,7 +41,7 @@ final class Connector {
 			'https://a.klaviyo.com/api/' . $path,
 			array(
 				'method'  => 'POST',
-				'timeout' => 5,
+				'timeout' => isset( $ctx['deadline'] ) ? max( 1, min( 5, (int) ceil( $ctx['deadline'] - microtime( true ) ) ) ) : 5,
 				'headers' => array(
 					'Authorization' => 'Klaviyo-API-Key ' . $ctx['key'],
 					'Content-Type'  => 'application/vnd.api+json',
@@ -74,7 +74,8 @@ final class Connector {
 	 * @param string $country_code Digits only, no plus.
 	 */
 	public static function phone( string $raw, string $country_code = '' ): string {
-		$digits = (string) preg_replace( '/\D/', '', $raw );
+		$country_code = (string) preg_replace( '/\D/', '', $country_code ); // "+61" and "61" are the same.
+		$digits       = (string) preg_replace( '/\D/', '', $raw );
 		if ( str_starts_with( trim( $raw ), '+' ) ) {
 			return strlen( $digits ) >= 8 && strlen( $digits ) <= 15 ? '+' . $digits : '';
 		}
@@ -189,8 +190,9 @@ final class Connector {
 	 * @param array  $entry Gravity Forms entry.
 	 * @param string $tag   Log prefix (form and entry ids).
 	 * @param array  $done  Step labels already delivered for this entry; steps that succeed are added, so a replay repeats only what failed.
+	 * @param string $feed_key Key of the feed in the feeds list; makes the event's unique_id.
 	 */
-	public static function run_feed( array $ctx, array $feed, array $entry, string $tag, array &$done = array() ): bool {
+	public static function run_feed( array $ctx, array $feed, array $entry, string $tag, array &$done = array(), string $feed_key = '0' ): bool {
 		$log   = $ctx['log'];
 		$attrs = self::profile_attributes( $feed, $entry );
 		$phone = (string) ( $feed['profile']['phone_number'] ?? '' );
@@ -213,19 +215,28 @@ final class Connector {
 			}
 		}
 		$consented = fn( $field ) => null === $field || '' !== self::value( $entry, (string) $field );
+		$email_ok  = $consented( $feed['email_consent'] ?? null );
+		$sms_ok    = $consented( $feed['sms']['consent'] ?? null );
 		$source    = $feed['source'] ?? null;
 		$steps     = array();
-		if ( $consented( $feed['email_consent'] ?? null ) ) {
+		if ( $email_ok ) {
 			foreach ( $feed['lists'] ?? array() as $list ) {
 				$steps[ "list=$list" ] = self::subscribe_payload( (string) $list, $attrs, false, $source );
 			}
 		}
-		if ( ! empty( $feed['sms']['list'] ) && ! empty( $attrs['phone_number'] ) && $consented( $feed['sms']['consent'] ?? null ) ) {
+		if ( ! empty( $feed['sms']['list'] ) && ! empty( $attrs['phone_number'] ) && $sms_ok ) {
 			$steps[ 'sms=' . $feed['sms']['list'] ] = self::subscribe_payload( (string) $feed['sms']['list'], $attrs, true, $source );
 		}
 		if ( ! $steps && array_filter( $consent_fields, fn( $f ) => null !== $f ) ) {
 			$log( "$tag skipped: no consent" );
 			return true;
+		}
+		// Each channel's identifier travels only with that channel's consent.
+		if ( ! $email_ok ) {
+			unset( $attrs['email'] );
+		}
+		if ( ! $sms_ok ) {
+			unset( $attrs['phone_number'] );
 		}
 
 		$import = fn( array $a ) => self::request(
@@ -242,6 +253,10 @@ final class Connector {
 		if ( ! $result['ok'] && 400 === $result['code'] && isset( $attrs['phone_number'] ) && preg_grep( '/phone_number/', $result['errors'] ) ) {
 			unset( $attrs['phone_number'] ); // A rejected number must not lose the sign-up.
 			unset( $steps[ 'sms=' . ( $feed['sms']['list'] ?? '' ) ] );
+			$log( "$tag phone rejected by Klaviyo; sent without it" );
+			if ( empty( $attrs['email'] ) ) {
+				return true; // Nothing else may be sent, and a retry would be rejected the same way.
+			}
 			$result = $import( $attrs );
 		}
 		if ( ! $result['ok'] ) {
@@ -250,48 +265,77 @@ final class Connector {
 		}
 
 		$ok = true;
+		// The visitor is waiting: stop at the first sign Klaviyo is slow or down, or when the time budget is
+		// spent, and leave the remaining steps to cron.
+		$late      = static fn(): bool => isset( $ctx['deadline'] ) && microtime( true ) >= $ctx['deadline'];
+		$transient = static fn( array $r ): bool => 0 === $r['code'] || 429 === $r['code'] || $r['code'] >= 500;
+		$stopped   = false;
 		foreach ( array_diff_key( $steps, array_flip( $done ) ) as $label => $payload ) {
+			if ( $late() ) {
+				$stopped = true;
+				break;
+			}
 			$result = self::request( $ctx, 'profile-subscription-bulk-create-jobs/', $payload );
-			if ( ! $result['ok'] ) {
-				$ok = false;
-				$log( "$tag step=subscribe $label status={$result['code']} errors=" . implode( ',', $result['errors'] ) );
-			} else {
+			if ( $result['ok'] ) {
 				$done[] = $label;
+				continue;
+			}
+			$ok = false;
+			$log( "$tag step=subscribe $label status={$result['code']} errors=" . implode( ',', $result['errors'] ) );
+			if ( $transient( $result ) ) {
+				$stopped = true;
+				break;
 			}
 		}
 
-		if ( ! empty( $feed['event']['name'] ) && ! in_array( 'event', $done, true ) ) {
-			$props  = self::profile_attributes( array( 'properties' => $feed['event']['properties'] ?? array() ), $entry )['properties'] ?? array();
-			$result = self::request(
-				$ctx,
-				'events/',
-				array(
-					'data' => array(
-						'type'       => 'event',
-						'attributes' => array(
-							'properties' => (object) $props,
-							'metric'     => array(
-								'data' => array(
-									'type'       => 'metric',
-									'attributes' => array( 'name' => $feed['event']['name'] ),
-								),
-							),
-							'profile'    => array(
-								'data' => array(
-									'type'       => 'profile',
-									'attributes' => array( 'email' => $attrs['email'] ),
-								),
-							),
+		$identity = isset( $attrs['email'] ) ? array( 'email' => $attrs['email'] ) : array_intersect_key( $attrs, array( 'phone_number' => 1 ) );
+		if ( ! empty( $feed['event']['name'] ) && ! in_array( 'event', $done, true ) && $identity ) {
+			if ( $stopped || $late() ) {
+				$stopped = true;
+			} else {
+				$props = self::profile_attributes( array( 'properties' => $feed['event']['properties'] ?? array() ), $entry )['properties'] ?? array();
+				$event = array(
+					'properties' => (object) $props,
+					'metric'     => array(
+						'data' => array(
+							'type'       => 'metric',
+							'attributes' => array( 'name' => $feed['event']['name'] ),
 						),
 					),
-				)
-			);
-			if ( ! $result['ok'] ) {
-				$ok = false;
-				$log( "$tag step=event status={$result['code']} errors=" . implode( ',', $result['errors'] ) );
-			} else {
-				$done[] = 'event';
+					'profile'    => array(
+						'data' => array(
+							'type'       => 'profile',
+							'attributes' => $identity,
+						),
+					),
+					// Klaviyo ignores a repeat of the same unique_id, so a retry after a lost response cannot double-count.
+					'unique_id'  => 'gf-' . (int) ( $entry['form_id'] ?? 0 ) . "-{$entry['id']}-$feed_key",
+				);
+				$created_at = ! empty( $entry['date_created'] ) ? strtotime( $entry['date_created'] . ' UTC' ) : false;
+				if ( $created_at ) {
+					$event['time'] = gmdate( 'c', $created_at );
+				}
+				$result = self::request(
+					$ctx,
+					'events/',
+					array(
+						'data' => array(
+							'type'       => 'event',
+							'attributes' => $event,
+						),
+					)
+				);
+				if ( ! $result['ok'] ) {
+					$ok = false;
+					$log( "$tag step=event status={$result['code']} errors=" . implode( ',', $result['errors'] ) );
+				} else {
+					$done[] = 'event';
+				}
 			}
+		}
+		if ( $stopped ) {
+			$ok = false;
+			$log( "$tag stopped early; remaining steps left to cron" );
 		}
 		return $ok;
 	}
@@ -319,7 +363,7 @@ final class Connector {
 				continue;
 			}
 			$done = array_filter( explode( ',', (string) gform_get_meta( $entry['id'], $meta . '_done' ) ) );
-			$ok   = self::run_feed( $ctx, $feed, $entry, "form={$form['id']} entry={$entry['id']}", $done );
+			$ok   = self::run_feed( $ctx, $feed, $entry, "form={$form['id']} entry={$entry['id']}", $done, (string) $i );
 			gform_update_meta( $entry['id'], $meta . '_done', implode( ',', $done ) );
 			gform_update_meta( $entry['id'], $meta, $ok ? 'sent' : 'failed' );
 			$all_ok = $all_ok && $ok;
