@@ -1,3 +1,5 @@
+* text=auto eol=lf
+
 # Files that never ship in the plugin zip (git archive) or to WordPress.org (.distignore).
 /.github export-ignore
 /tests export-ignore
