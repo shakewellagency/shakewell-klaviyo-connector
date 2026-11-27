@@ -4,7 +4,7 @@ Tags: klaviyo, gravity forms, email marketing, newsletter, consent
 Requires at least: 6.5
 Tested up to: 7.1
 Requires PHP: 8.1
-Stable tag: 0.1.1
+Stable tag: 0.1.2
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -18,7 +18,7 @@ When a visitor submits a form you have chosen, the plugin creates or updates the
 * Consent first. If you map a consent checkbox and it is not ticked, nothing is sent for that person.
 * Sends only the fields you map.
 * The Klaviyo private API key is read from a PHP constant or an environment variable. It is never stored in the database and never shown in any screen.
-* Retries temporary failures (network errors, rate limits, server errors) up to three times. Each entry is marked sent or failed, so the same submission is never sent twice.
+* The visitor never waits on Klaviyo: each call is tried once, with a 5 second limit. A failed entry is retried from WP-Cron after 1 minute, 15 minutes and 1 hour, repeating only the steps that failed. Each entry is marked sent or failed, so the same step is never sent twice.
 * Logs carry the form id, entry id, step and HTTP status only. Never an email address, a name, a phone number, the API key or Klaviyo's response text.
 * Stays silent while the paid Klaviyo add-on for Gravity Forms is active, so nobody is sent twice.
 
@@ -29,7 +29,7 @@ Requires the Gravity Forms plugin, which is a paid plugin from a third party and
 This plugin sends data to Klaviyo (https://www.klaviyo.com), the email marketing service whose account you connect.
 
 * What is sent: for each submission of a form you have mapped, only the fields you mapped: any of email address, first name, last name, phone number, location fields and custom properties, plus the Klaviyo list id, the consent status "subscribed", an optional source label and an optional event name. Your private API key is sent in the Authorization header.
-* When: once per submission, right after the form is submitted, and only if the connector is enabled, a key is set and the person ticked the consent checkbox you mapped (if any). Failed requests are retried up to three times.
+* When: once per submission, right after the form is submitted, and only if the connector is enabled, a key is set and the person ticked the consent checkbox you mapped (if any). Failed requests are retried later from WP-Cron, up to three times.
 * Where: https://a.klaviyo.com/api/ (profile import, subscription jobs and events).
 * Klaviyo terms of service: https://www.klaviyo.com/legal
 * Klaviyo privacy policy: https://www.klaviyo.com/legal/privacy-notice
@@ -65,12 +65,12 @@ The same names work as environment variables. The enabled switch is on for `1` o
 `        'source'        => 'Newsletter sign-up',    // custom_source label (optional)`
 `        'sms'           => array( 'list' => 'XyZ789', 'consent' => '9.1' ),  // optional SMS list`
 `        'event'         => array( 'name' => 'Signed up', 'properties' => array( 'Plan' => '7' ) ),  // optional`
-`        'phone_country_code' => '44',           // optional; needed to read local numbers such as 07911 123456 (no default)`
+`        'phone_country_code' => '44',           // optional; needed to read national numbers such as 07911 123456 or 7911 123456 (no default)`
 `    );`
 `    return $feeds;`
 `} );`
 
-Field ids are the ones in the Gravity Forms entry: a plain number such as `3`, or `1.3` for one input of a compound field. A checkbox field stores its choices as inputs, so map the consent checkbox as `8.1`, not `8`.
+Field ids are the ones in the Gravity Forms entry: a plain number such as `3`, or `1.3` for one input of a compound field. A checkbox field stores its choices as inputs, so map the consent checkbox as `8.1`, not `8`. A consent field mapped to a checkbox group id is logged and nothing is sent.
 
 == Consent ==
 
@@ -88,7 +88,7 @@ In wp-config.php or the server environment, as shown under Installation. There i
 
 = Why was nobody added to Klaviyo? =
 
-Check that the enabled switch and the key are set, that the form id matches a feed, that the email field is a valid address, that the consent box was ticked, and the PHP error log. Failed entries are marked failed in the entry's meta and are retried by calling `Shakewell\KlaviyoConnector\Connector::process_entry()` for the entry.
+Check that the enabled switch and the key are set, that the form id matches a feed, that the email field is a valid address, that the consent box was ticked, and the PHP error log. Failed entries are marked failed in the entry's meta and retried automatically from WP-Cron. To replay one by hand, call `Shakewell\KlaviyoConnector\Connector::process_entry()` for the entry: it repeats only the steps that failed.
 
 = Can I use it with the Gravity Forms Klaviyo add-on? =
 
@@ -100,10 +100,19 @@ Please do not open a public issue. Follow SECURITY.md in the plugin's repository
 
 == Upgrade Notice ==
 
+= 0.1.2 =
+National phone numbers now need phone_country_code in the feed, with or without the leading 0. Failed submissions are retried from WP-Cron instead of while the visitor waits.
+
 = 0.1.1 =
 Breaking: rename KLAVIYO_PRIVATE_API_KEY and KLAVIYO_CONNECTOR_ENABLED to SHAKEWELL_KLAVIYO_CONNECTOR_API_KEY and _ENABLED, or the connector stays off. Set phone_country_code in each feed, or local phone numbers are skipped.
 
 == Changelog ==
+
+= 0.1.2 =
+* Phone numbers without a leading 0 or + (such as 412345678) get the feed's country code instead of being read as international. Without phone_country_code they are skipped.
+* Replaying a failed entry repeats only the steps that failed, so the event is no longer sent twice.
+* One attempt per call with a 5 second limit, so a Klaviyo outage no longer holds up the form for 30 seconds. Failed entries are retried from WP-Cron.
+* A consent field mapped to a checkbox group (3 instead of 3.1) is logged, and nothing is sent.
 
 = 0.1.1 =
 * Breaking: the setting names KLAVIYO_PRIVATE_API_KEY and KLAVIYO_CONNECTOR_ENABLED are replaced by SHAKEWELL_KLAVIYO_CONNECTOR_API_KEY and SHAKEWELL_KLAVIYO_CONNECTOR_ENABLED. The built-in default country code is gone: set phone_country_code per feed. Numbers without a leading + or 00 or 0 are now read as already including their country code, and a skipped phone is logged.
