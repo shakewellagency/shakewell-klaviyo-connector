@@ -31,6 +31,18 @@ final class Plugin {
 	public const RETRY_DELAYS = array( 60, 900, 3600 );
 
 	/**
+	 * Seconds a visitor may wait on Klaviyo in total; steps still unsent when it runs out go to cron.
+	 */
+	public const VISITOR_BUDGET = 5;
+
+	/**
+	 * Deactivation: drops the pending retries, which would otherwise fire into a plugin that is off.
+	 */
+	public static function deactivate(): void {
+		wp_unschedule_hook( 'shakewell_klaviyo_connector_retry' );
+	}
+
+	/**
 	 * Reads a setting from a PHP constant or an environment variable, never the database.
 	 *
 	 * @param string $name API_KEY or ENABLED.
@@ -74,6 +86,7 @@ final class Plugin {
 		if ( null === $ctx || class_exists( 'GFKlaviyoFeedAddOn', false ) || ! is_array( $entry ) || ! is_array( $form ) ) {
 			return;
 		}
+		$ctx['deadline'] = microtime( true ) + self::VISITOR_BUDGET;
 		try {
 			if ( ! Connector::process_entry( $entry, $form, $ctx ) ) {
 				wp_schedule_single_event( time() + self::RETRY_DELAYS[0], 'shakewell_klaviyo_connector_retry', array( (int) $entry['id'], (int) $form['id'], 1 ) );
