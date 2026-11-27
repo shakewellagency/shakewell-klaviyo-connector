@@ -59,4 +59,7 @@ jobs:
         run: npm test
       - name: Plugin Check
         if: matrix.wp == 'latest'
-        run: npm run plugin-check
+        # wp plugin check prints findings but exits 0, so fail the step on any ERROR row.
+        run: |
+          npm run plugin-check | tee plugin-check.log
+          ! grep -qP '\tERROR\t' plugin-check.log
