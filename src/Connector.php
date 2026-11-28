@@ -37,11 +37,20 @@ final class Connector {
 	 * @return array{ok:bool,code:int,errors:string[]}
 	 */
 	public static function request( array $ctx, string $path, array $payload ): array {
+		$left = isset( $ctx['deadline'] ) ? $ctx['deadline'] - microtime( true ) : 5;
+		if ( $left < 1 ) {
+			// Under a second of the visitor's budget is left: do not call, so the total stays within 5 seconds. Cron retries.
+			return array(
+				'ok'     => false,
+				'code'   => 0,
+				'errors' => array(),
+			);
+		}
 		$response = wp_remote_request(
 			'https://a.klaviyo.com/api/' . $path,
 			array(
 				'method'  => 'POST',
-				'timeout' => isset( $ctx['deadline'] ) ? max( 1, min( 5, (int) ceil( $ctx['deadline'] - microtime( true ) ) ) ) : 5,
+				'timeout' => min( 5, $left ),
 				'headers' => array(
 					'Authorization' => 'Klaviyo-API-Key ' . $ctx['key'],
 					'Content-Type'  => 'application/vnd.api+json',

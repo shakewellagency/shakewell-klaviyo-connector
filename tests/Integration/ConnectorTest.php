@@ -447,8 +447,7 @@ final class ConnectorTest extends WP_UnitTestCase {
 		$ok = Connector::process_entry( $this->entry, $this->form, $ctx );
 		remove_all_filters( 'shakewell_klaviyo_connector_feeds' );
 		$this->assertFalse( $ok );
-		$this->assertCount( 1, $this->calls, 'the profile only' );
-		$this->assertSame( 1, $this->calls[0]['timeout'], 'timeout shrinks to the time left' );
+		$this->assertCount( 0, $this->calls, 'less than a second left: no call at all' );
 		// Cron has no deadline, so the retry sends the rest.
 		$this->calls = array();
 		add_filter( 'shakewell_klaviyo_connector_feeds', fn() => array( $this->feed ) );
