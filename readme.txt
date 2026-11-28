@@ -18,7 +18,7 @@ When a visitor submits a form you have chosen, the plugin creates or updates the
 * Consent first, per channel. Without the email consent box the email address is not sent, and without the SMS consent box the phone number is not sent: not on the profile, not in a subscription, not in the event. If neither box allows anything to be sent, nothing is.
 * Sends only the fields you map.
 * The Klaviyo private API key is read from a PHP constant or an environment variable. It is never stored in the database and never shown in any screen.
-* The visitor waits on Klaviyo for 5 seconds at most in total: each call is tried once, the first slow, rate-limited or failing response stops the rest, and whatever was not sent is left to WP-Cron. A failed entry is retried from WP-Cron after 1 minute, 15 minutes and 1 hour, repeating only the steps that failed. Each entry is marked sent or failed, so the same step is never sent twice.
+* The visitor waits on Klaviyo for 5 seconds at most in total: each call is tried once, and no call starts when less than a second of that time is left, the first slow, rate-limited or failing response stops the rest, and whatever was not sent is left to WP-Cron. A failed entry is retried from WP-Cron after 1 minute, 15 minutes and 1 hour, repeating only the steps that failed. Each entry is marked sent or failed, so the same step is never sent twice.
 * Logs carry the form id, entry id, step and HTTP status only. Never an email address, a name, a phone number, the API key or Klaviyo's response text.
 * Stays silent while the paid Klaviyo add-on for Gravity Forms is active, so nobody is sent twice.
 
@@ -74,7 +74,7 @@ Field ids are the ones in the Gravity Forms entry: a plain number such as `3`, o
 
 == Consent ==
 
-Consent is checked per channel. If a feed maps `email_consent`, the person must have ticked that checkbox (any non-empty value) or their email address is not sent anywhere: no profile, no email subscription, no event. The same holds for the phone number and the SMS list with the `sms` `consent` field. When only one box is ticked, the profile and the event carry just that channel's identifier (so an SMS-only sign-up has a phone number and no email address). If neither allows anything to be sent, nothing is sent. A feed with no consent field subscribes everyone who submits the form, so use one wherever the law of your audience asks for opt-in. Collecting and recording the consent, and the wording next to the checkbox, are your responsibility.
+Consent is checked per channel. If a feed maps `email_consent`, the person must have ticked that checkbox (any non-empty value) or their email address is not sent anywhere: no profile, no email subscription, no event. The same holds for the phone number and the SMS list with the `sms` `consent` field. When only one box is ticked, the profile and the event carry just that channel's identifier (so an SMS-only sign-up has a phone number and no email address). If neither allows anything to be sent, nothing is sent. A feed with no consent field subscribes everyone who submits the form, so use one wherever the law of your audience asks for opt-in. The email field must be mapped and filled on every connected form: a submission with an empty or invalid email address is skipped, even when the SMS box is ticked. Collecting and recording the consent, and the wording next to the checkbox, are your responsibility.
 
 == Frequently Asked Questions ==
 
